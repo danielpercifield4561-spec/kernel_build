@@ -22,30 +22,47 @@ jobs:
 
       - name: 📦 Reconstruct and Unpack Source
         run: |
-          echo "🔗 Recombining parts from Kernel_Source/Kernels.zip.aa...ai"
-          
-          # Match your exact folder and file names (Case Sensitive!)
+          echo "🔗 Recombining parts from Kernel_Source/..."
           cat Kernel_Source/Kernels.zip.* > Combined_Source.zip
           
-          if [ ! -s Combined_Source.zip ]; then
-            echo "❌ ERROR: Combined file is empty! Check folder/file names."
-            ls -R
-            exit 1
-          fi
-
           mkdir -p kernel-source
+          echo "📂 Extracting Zip..."
           7z x Combined_Source.zip -okernel-source/
           
           cd kernel-source
-          if [ -f "Kernel.tar.gz" ]; then
-            tar -xf Kernel.tar.gz --strip-components=1
+          
+          # 1. SEARCH: Look for Kernel.tar.gz anywhere in the extracted folders
+          INNER_TARBALL=$(find . -name "Kernel.tar.gz" | head -n 1)
+          
+          if [ -n "$INNER_TARBALL" ]; then
+            echo "📦 Found inner tarball at $INNER_TARBALL. Extracting..."
+            # Extract it to the current directory (kernel-source)
+            tar -xf "$INNER_TARBALL" --strip-components=1
+          else
+            echo "ℹ️ No Kernel.tar.gz found, checking if files are nested in a folder..."
+            # If Samsung put everything inside a folder like SM-X210_EUR_14/
+            # we move everything up one level.
+            if [ -d arch ] || [ -f Makefile ]; then
+               echo "✅ Files already at top level."
+            else
+               echo "📂 Moving nested files to top level..."
+               # Find the folder that actually contains the Makefile
+               NESTED_DIR=$(find . -maxdepth 2 -name "Makefile" -exec dirname {} \;)
+               if [ "$NESTED_DIR" != "." ] && [ -n "$NESTED_DIR" ]; then
+                  mv "$NESTED_DIR"/* .
+               fi
+            fi
           fi
           
-          # Final check for your specific defconfig
+          # 2. FINAL VERIFICATION: Let's see where the files actually are
+          echo "🔍 Verifying directory structure..."
+          ls -F
+          
           if [ -f "arch/arm64/configs/vendor/gta9pwifi_eur_open_defconfig" ]; then
              echo "✅ SUCCESS: Tab A9+ source verified!"
           else
-             echo "❌ ERROR: Defconfig not found. Extraction might have failed."
+             echo "❌ ERROR: Defconfig not found! Printing directory tree to help debug:"
+             find . -maxdepth 3 -name "*defconfig*"
              exit 1
           fi
 
