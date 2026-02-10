@@ -111,26 +111,32 @@ jobs:
           make $MAKE_ARGS vendor/gta9pwifi_eur_open_defconfig
 
           echo "🚀 Building Image.gz and DTBs..."
-          # We use Image.gz and dtbs instead of Image.gz-dtb
+          # Build Image.gz and all device trees
           make -j$(nproc --all) $MAKE_ARGS Image.gz dtbs 2>&1 | tee ../build.log
 
-          # 🛠️ Manual Step: Create Image.gz-dtb
-          # This appends the device tree blobs to the kernel image
-          echo "🔗 Creating Image.gz-dtb manually..."
-          cat out/arch/arm64/boot/Image.gz $(find out/arch/arm64/boot/dts/vendor/qcom -name "*.dtb") > out/arch/arm64/boot/Image.gz-dtb || true
+          # 🛠️ Manual Step: Find DTBs and Create Image.gz-dtb
+          echo "🔍 Locating DTB files..."
+          # This finds any .dtb file anywhere inside the output dts folder
+          DTB_FILES=$(find out/arch/arm64/boot/dts -name "*.dtb")
+          
+          if [ -n "$DTB_FILES" ]; then
+            echo "🔗 Found DTBs. Creating Image.gz-dtb manually..."
+            cat out/arch/arm64/boot/Image.gz $DTB_FILES > out/arch/arm64/boot/Image.gz-dtb
+          else
+            echo "⚠️ No DTBs found. Image.gz-dtb will not be created."
+          fi
 
-          # 🔍 SEARCH AND RESCUE
-          echo "🔍 Gathering final artifacts..."
+          # 🔍 GATHER ARTIFACTS
+          echo "📦 Gathering final artifacts..."
           mkdir -p $GITHUB_WORKSPACE/final_output
           
-          # Copy the kernel images
-          cp out/arch/arm64/boot/Image.gz $GITHUB_WORKSPACE/final_output/ 2>/dev/null || true
-          cp out/arch/arm64/boot/Image.gz-dtb $GITHUB_WORKSPACE/final_output/ 2>/dev/null || true
+          # Copy everything found in the boot folder (Image, Image.gz, Image.gz-dtb)
+          find out/arch/arm64/boot -maxdepth 1 -type f -exec cp {} $GITHUB_WORKSPACE/final_output/ \;
           
-          # Copy the DTBs (Device Tree Blobs) just in case you need them for AIK
-          find out/arch/arm64/boot/dts/vendor/qcom -name "*.dtb" -exec cp {} $GITHUB_WORKSPACE/final_output/ \;
+          # Copy all individual DTB files found
+          find out/arch/arm64/boot/dts -name "*.dtb" -exec cp {} $GITHUB_WORKSPACE/final_output/ \;
 
-          echo "✅ Artifacts collected:"
+          echo "✅ Files ready for upload:"
           ls -lh $GITHUB_WORKSPACE/final_output/
 
       - name: 📤 Upload
