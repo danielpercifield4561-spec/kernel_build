@@ -104,7 +104,7 @@ jobs:
             OBJDUMP=$CLANG_BIN/llvm-objdump \
             STRIP=$CLANG_BIN/llvm-strip \
             DTC_EXT=dtc \
-            KCFLAGS=-Wno-error
+            KCFLAGS='-Wno-error -Wno-void-pointer-to-int-cast -Wno-pointer-to-int-cast'
           "
 
           echo "⚙️ Running Defconfig..."
