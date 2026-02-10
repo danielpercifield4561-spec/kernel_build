@@ -15,7 +15,6 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y bc build-essential zip curl libstdc++6 git wget 7zip python3 libssl-dev libelf-dev llvm lld
           
-          # Setup Toolchains (Standard for 5.4.249 kernels)
           mkdir toolchains
           git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9 toolchains/gcc64
           git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9 toolchains/gcc32
@@ -23,40 +22,41 @@ jobs:
 
       - name: 📦 Reconstruct and Unpack Source
         run: |
-          echo "🔗 Recombining parts from Kernel_Source folder..."
+          echo "🔗 Recombining parts from Kernel_Source/Kernels.zip.aa...ai"
           
-          # Stitches together kern.zip.aa, kern.zip.ab, etc.
-          cat Kernel_Source/kern.zip.* > Combined_Source.zip
+          # Match your exact folder and file names (Case Sensitive!)
+          cat Kernel_Source/Kernels.zip.* > Combined_Source.zip
           
+          if [ ! -s Combined_Source.zip ]; then
+            echo "❌ ERROR: Combined file is empty! Check folder/file names."
+            ls -R
+            exit 1
+          fi
+
           mkdir -p kernel-source
-          echo "📂 Extracting Zip..."
           7z x Combined_Source.zip -okernel-source/
           
           cd kernel-source
-          # Extract Samsung's inner tarball if it's there
           if [ -f "Kernel.tar.gz" ]; then
             tar -xf Kernel.tar.gz --strip-components=1
           fi
           
-          # 🚨 CRITICAL CHECK: Verify we have the A9+ config
+          # Final check for your specific defconfig
           if [ -f "arch/arm64/configs/vendor/gta9pwifi_eur_open_defconfig" ]; then
-             echo "✅ SUCCESS: Tab A9+ (qgki) source verified!"
+             echo "✅ SUCCESS: Tab A9+ source verified!"
           else
-             echo "❌ ERROR: Defconfig not found. Check your folder names on GitHub."
-             ls -R arch/arm64/configs/vendor/ || echo "Folder missing!"
+             echo "❌ ERROR: Defconfig not found. Extraction might have failed."
              exit 1
           fi
 
-      - name: 🛠️ Patch KernelSU (Root)
+      - name: 🛠️ Patch KernelSU
         run: |
           cd kernel-source
           curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s main
           
-          # Configure KSU in the defconfig
           CONFIG="arch/arm64/configs/vendor/gta9pwifi_eur_open_defconfig"
           echo "CONFIG_KSU=y" >> $CONFIG
           echo "CONFIG_OVERLAY_FS=y" >> $CONFIG
-          # Match your tablet's Permissive status
           sed -i 's/CONFIG_ALWAYS_ENFORCE=y/CONFIG_ALWAYS_ENFORCE=n/g' $CONFIG
 
       - name: ⚙️ Configure and Compile
@@ -66,7 +66,6 @@ jobs:
           
           cd $GITHUB_WORKSPACE/kernel-source
           
-          # Force ARCH=arm64 to prevent the MIPS error
           MAKE_ARGS="
             ARCH=arm64 \
             SUBARCH=arm64 \
@@ -85,17 +84,13 @@ jobs:
             KCFLAGS=-Wno-error
           "
 
-          echo "⚙️ Running Defconfig..."
           make $MAKE_ARGS vendor/gta9pwifi_eur_open_defconfig
-
-          echo "🚀 Building Kernel (thousands of CC lines)..."
           make -j$(nproc --all) $MAKE_ARGS Image.gz-dtb 2>&1 | tee ../build.log
 
-          # Find the output
           mkdir -p $GITHUB_WORKSPACE/final_output
           find out/arch/arm64/boot -name "Image.gz-dtb" -exec cp {} $GITHUB_WORKSPACE/final_output/ \;
 
-      - name: 📤 Upload Result
+      - name: 📤 Upload
         if: always()
         uses: actions/upload-artifact@v4
         with:
