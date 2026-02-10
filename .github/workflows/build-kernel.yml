@@ -71,12 +71,16 @@ jobs:
       - name: 🛠️ Patch KernelSU
         run: |
           cd kernel-source
-          curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s main
+          # Using v0.9.5 because it's the last version for 5.4 kernels
+          curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s v0.9.5
           
           CONFIG="arch/arm64/configs/vendor/gta9pwifi_eur_open_defconfig"
           echo "CONFIG_KSU=y" >> $CONFIG
           echo "CONFIG_OVERLAY_FS=y" >> $CONFIG
-          sed -i 's/CONFIG_ALWAYS_ENFORCE=y/CONFIG_ALWAYS_ENFORCE=n/g' $CONFIG
+          # Kprobes is usually required for KernelSU to "hook" into the system
+          echo "CONFIG_KPROBES=y" >> $CONFIG
+          echo "CONFIG_HAVE_KPROBES=y" >> $CONFIG
+          echo "CONFIG_KPROBE_EVENTS=y" >> $CONFIG
 
       - name: ⚙️ Configure and Compile
         run: |
