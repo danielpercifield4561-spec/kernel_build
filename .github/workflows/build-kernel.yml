@@ -1,4 +1,4 @@
-Name: Tab A9+ Custom Kernel (Bit 6 - KernelSU-Next)
+name: Tab A9+ Custom Kernel (Bit 6 - KernelSU-Next)
 
 on:
   workflow_dispatch:
