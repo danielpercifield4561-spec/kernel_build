@@ -1,4 +1,4 @@
-name: Tab A9+ Custom Kernel (Bit 6 - KSUN Legacy)
+name: Tab A9+ Custom Kernel (Bit 6 - qgki)
 
 on:
   workflow_dispatch:
@@ -25,25 +25,47 @@ jobs:
           cat Kernel_Source/Kernels.zip.* > Combined_Source.zip
           
           mkdir -p kernel-source
+          echo "📂 Layer 1: Extracting Combined_Source.zip..."
           7z x Combined_Source.zip -okernel-source/
           
           cd kernel-source
+          
+          # 1. Check for a second Zip (The Kernels.zip found in your last log)
           if [ -f "Kernels.zip" ]; then
+            echo "📂 Layer 2: Found Kernels.zip inside. Extracting..."
             7z x "Kernels.zip" -aoa
             rm "Kernels.zip"
           fi
+          # 2. Check for Samsung's Kernel.tar.gz
           INNER_TARBALL=$(find . -name "Kernel.tar.gz" | head -n 1)
           if [ -n "$INNER_TARBALL" ]; then
+            echo "📦 Layer 3: Found Kernel.tar.gz. Extracting..."
             tar -xf "$INNER_TARBALL" --strip-components=1
             rm "$INNER_TARBALL"
           fi
           
+          # 3. Flatten structure if everything is in a subfolder
           if [ ! -f Makefile ] && [ ! -d arch ]; then
+            echo "📂 Moving files from subfolder to root..."
             SUBDIR=$(find . -maxdepth 2 -name "Makefile" -exec dirname {} \;)
             if [ -n "$SUBDIR" ] && [ "$SUBDIR" != "." ]; then
               mv "$SUBDIR"/* .
             fi
           fi
+          
+          # 4. Final Verification
+          echo "🔍 Verifying directory structure..."
+          ls -F
+          
+          if [ -f "arch/arm64/configs/vendor/gta9pwifi_eur_open_defconfig" ]; then
+             echo "✅ SUCCESS: Tab A9+ source verified!"
+          else
+             echo "❌ ERROR: Defconfig not found!"
+             echo "Full directory tree for debugging:"
+             find . -maxdepth 3
+             exit 1
+          fi
+   
       - name: 🛠️ Patch KernelSU-Next (Legacy + Manual Hooks)
         run: |
           cd kernel-source
@@ -95,22 +117,38 @@ jobs:
             DTC_EXT=dtc \
             KCFLAGS=-Wno-error
           "
+          echo "⚙️ Running Defconfig..."
           make $MAKE_ARGS vendor/gta9pwifi_eur_open_defconfig
+          echo "🚀 Building Image.gz and DTBs..."
+          # Build Image.gz and all device trees
           make -j$(nproc --all) $MAKE_ARGS Image.gz dtbs 2>&1 | tee ../build.log
-          
-          # Create Image.gz-dtb
+          # 🛠️ Manual Step: Find DTBs and Create Image.gz-dtb
+          echo "🔍 Locating DTB files..."
+          # This finds any .dtb file anywhere inside the output dts folder
           DTB_FILES=$(find out/arch/arm64/boot/dts -name "*.dtb")
+          
           if [ -n "$DTB_FILES" ]; then
+            echo "🔗 Found DTBs. Creating Image.gz-dtb manually..."
             cat out/arch/arm64/boot/Image.gz $DTB_FILES > out/arch/arm64/boot/Image.gz-dtb
+          else
+            echo "⚠️ No DTBs found. Image.gz-dtb will not be created."
           fi
+          # 🔍 GATHER ARTIFACTS
+          echo "📦 Gathering final artifacts..."
           mkdir -p $GITHUB_WORKSPACE/final_output
+          
+          # Copy everything found in the boot folder (Image, Image.gz, Image.gz-dtb)
           find out/arch/arm64/boot -maxdepth 1 -type f -exec cp {} $GITHUB_WORKSPACE/final_output/ \;
+          
+          # Copy all individual DTB files found
           find out/arch/arm64/boot/dts -name "*.dtb" -exec cp {} $GITHUB_WORKSPACE/final_output/ \;
+          echo "✅ Files ready for upload:"
+          ls -lh $GITHUB_WORKSPACE/final_output/
       - name: 📤 Upload
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: Tab-A9-Plus-KSUN-Result
+          name: Tab-A9-Plus-Kernel-Result
           path: |
             final_output/*
             build.log
