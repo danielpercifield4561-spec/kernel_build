@@ -66,32 +66,31 @@ jobs:
              exit 1
           fi
    
-      - name: 🛠️ Patch KernelSU-Next (Legacy + Manual Hooks)
+      - name: 🛠️ Patch KernelSU-Next
         run: |
           cd kernel-source
+          sudo chmod -R 777 .
           
-          # 1. FIX PERMISSIONS (This stops the "Permission denied" error)
-          sudo chmod -R 777 . 
+          # 1. Run the base patch (WITHOUT the legacy flag this time, let it auto-detect)
+          curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s next
           
-          # 2. Run the base patch
-          curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s legacy
-          
-          # 3. MANUALLY INJECT HOOKS (Ensures Root works on 5.4)
-          # Injecting into fs/open.c
-          sed -i '/asmlinkage long sys_faccessat(int dfd, const char __user \*filename, int mode)/a \{ ksu_handle_faccessat(&dfd, &filename, &mode, NULL);' fs/open.c
-          
-          # Injecting into fs/exec.c
-          sed -i '/int do_execveat_common(int fd, struct filename \*filename,/a \{ ksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);' fs/exec.c
-
-          # 4. Apply Configs
+          # 2. Force the correct Configs in your specific defconfig
           CONFIG="arch/arm64/configs/vendor/gta9pwifi_eur_open_defconfig"
+          
+          # Remove any existing KSU lines to prevent duplicates
+          sed -i '/CONFIG_KSU/d' $CONFIG
+          sed -i '/CONFIG_KPROBES/d' $CONFIG
+          sed -i '/CONFIG_OVERLAY_FS/d' $CONFIG
+          
+          # Add the working setup
           echo "CONFIG_KSU=y" >> $CONFIG
           echo "CONFIG_KSU_NEXT=y" >> $CONFIG
-          echo "CONFIG_KSU_MANUAL_HOOK=y" >> $CONFIG
           echo "CONFIG_OVERLAY_FS=y" >> $CONFIG
           echo "CONFIG_KPROBES=y" >> $CONFIG
           echo "CONFIG_HAVE_KPROBES=y" >> $CONFIG
           echo "CONFIG_KPROBE_EVENTS=y" >> $CONFIG
+          # We are NOT adding MANUAL_HOOK here so it uses Kprobes instead
+
 
       - name: ⚙️ Configure and Compile
         run: |
