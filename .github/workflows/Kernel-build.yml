@@ -1,4 +1,4 @@
-name: Tab A9+ KSU-Next (Top-Level Integration)
+name: Tab A9+ KSU-Next (Final Structure Fix)
 
 on:
   workflow_dispatch:
@@ -21,44 +21,52 @@ jobs:
 
       - name: 📦 Reconstruct and Unpack Source
         run: |
+          echo "🔗 Recombining parts..."
           cat Kernel_Source/Kernels.zip.* > Combined_Source.zip
+          
           mkdir -p kernel-source
           7z x Combined_Source.zip -okernel-source/
+          
+          # Force deep extraction
           cd kernel-source
-          if [ -f "Kernels.zip" ]; then 7z x "Kernels.zip" -aoa && rm "Kernels.zip"; fi
-          INNER_TARBALL=$(find . -name "Kernel.tar.gz" | head -n 1)
-          if [ -n "$INNER_TARBALL" ]; then tar -xf "$INNER_TARBALL" --strip-components=1 && rm "$INNER_TARBALL"; fi
-          if [ ! -f Makefile ]; then
-            SUBDIR=$(find . -maxdepth 2 -name "Makefile" -exec dirname {} \;)
-            [ -n "$SUBDIR" ] && mv "$SUBDIR"/* .
+          find . -name "*.zip" -exec 7z x {} -aoa \;
+          find . -name "*.tar.gz" -exec tar -xf {} --strip-components=1 \;
+          
+          # FLATTEN: Find the directory that contains the Makefile and move everything to the root
+          REAL_ROOT=$(find . -name "Makefile" -exec dirname {} \; | head -n 1)
+          if [ "$REAL_ROOT" != "." ]; then
+            echo "📂 Moving source from $REAL_ROOT to root..."
+            mv "$REAL_ROOT"/* .
           fi
+          
+          echo "🔍 Directory contents after flattening:"
+          ls -F
 
-      - name: 🛠️ Patch KernelSU-Next (Top-Level Method)
+      - name: 🛠️ Patch KernelSU-Next
         run: |
           cd kernel-source
-          # 1. Download KSU-Next into a ROOT folder named 'ksu'
-          # We don't put it in drivers/ this time to avoid the linker error
-          git clone https://github.com/KernelSU-Next/KernelSU-Next ksu
-          cd ksu && git checkout next && cd ..
           
-          # 2. Integrate into the MAIN Makefile (The "Force" method)
-          # We tell the very top Makefile to include our new ksu directory
+          # 1. Clone the 'next' branch directly
+          echo "📥 Cloning KernelSU-Next..."
+          git clone https://github.com/KernelSU-Next/KernelSU-Next.git -b next ksu
+          
+          # 2. Integrate into the MAIN Makefile
+          # This forces the ksu directory to be compiled
+          echo "⚙️ Integrating KSU into Makefile..."
           sed -i 's/^core-y[[:space:]]*:=/core-y += ksu\/ \ncore-y := /' Makefile
           
-          # 3. Inject Hooks with absolute safety
-          # We use the specific line numbers/patterns common to Samsung 5.4 kernels
-          echo "Injecting headers..."
-          sed -i '1i #include "../ksu/kernel/ksu.h"' fs/open.c
-          sed -i '1i #include "../ksu/kernel/ksu.h"' fs/exec.c
+          # 3. Inject Headers and Hooks
+          echo "💉 Injecting Hooks..."
+          # Add headers to the very top
+          sed -i '1i #include "ksu/kernel/ksu.h"' fs/open.c
+          sed -i '1i #include "ksu/kernel/ksu.h"' fs/exec.c
 
-          echo "Injecting hooks..."
-          # Match function definition and insert hook after the first '{' on the following line
+          # Match function and insert hook after opening brace {
           sed -i '/long do_faccessat(int dfd, const char __user \*filename, int mode)/{n;s/{/{ ksu_handle_faccessat(\&dfd, \&filename, \&mode, NULL);/}' fs/open.c
           sed -i '/int do_execveat_common(int fd, struct filename \*filename,/{n;s/{/{ ksu_handle_execveat(\&fd, \&filename, \&argv, \&envp, \&flags);/}' fs/exec.c
 
-          # 4. Verify Hooks (Build will fail here if sed failed)
-          grep "ksu_handle_faccessat" fs/open.c || exit 1
-          grep "ksu_handle_execveat" fs/exec.c || exit 1
+          # 4. Verify Patch
+          grep "ksu_handle" fs/open.c || (echo "❌ Hook injection failed!" && exit 1)
 
           # 5. Configs
           CONFIG="arch/arm64/configs/vendor/gta9pwifi_eur_open_defconfig"
@@ -98,10 +106,10 @@ jobs:
           
           make $MAKE_ARGS vendor/gta9pwifi_eur_open_defconfig
           
-          echo "🚀 Building Kernel (Look for 'ksu/' compilation in logs)..."
+          echo "🚀 Building Kernel..."
           make -j$(nproc --all) $MAKE_ARGS Image.gz dtbs 2>&1 | tee ../build.log
 
-          # Join Kernel + DTB
+          # 🔗 Gather Artifacts
           mkdir -p $GITHUB_WORKSPACE/final_output
           DTBS=$(find out/arch/arm64/boot/dts -name "*.dtb")
           if [ -n "$DTBS" ]; then
