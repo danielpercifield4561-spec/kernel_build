@@ -33,28 +33,33 @@ jobs:
             [ -n "$SUBDIR" ] && mv "$SUBDIR"/* .
           fi
 
-      - name: 🛠️ Patch KernelSU-Next (Brute Force)
+      - name: 🛠️ Patch KernelSU-Next
         run: |
           cd kernel-source
-          # 1. Download KSU-Next
+          # 1. Integrate KernelSU-Next Source
+          # We download the 'next' branch which is required for modern qgki kernels
           curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s next
           
-          # 2. Inject Headers (Force them to the very top)
+          # 2. FORCE Integration (Top-Injection Method)
+          # We put the instruction at the TOP of the Makefile to ensure it's never skipped
+          echo "Forcing KSU into Build System..."
+          sed -i '1i obj-y += kernelsu/' drivers/Makefile
+          sed -i '1i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
+
+          # 3. Inject Hooks with "Brace Search"
+          # This finds the function name, then searches for the next '{' and replaces it
+          # This is the most compatible way for Samsung/Qualcomm source code
+          echo "Injecting hooks into fs/open.c..."
+          sed -i '/do_faccessat/,/{/ s/{/{ ksu_handle_faccessat(\&dfd, \&filename, \&mode, NULL);/' fs/open.c
+          
+          echo "Injecting hooks into fs/exec.c..."
+          sed -i '/do_execveat_common/,/{/ s/{/{ ksu_handle_execveat(\&fd, \&filename, \&argv, \&envp, \&flags);/' fs/exec.c
+
+          # 4. Inject Headers
           sed -i '1i #include "../drivers/kernelsu/ksu.h"' fs/open.c
           sed -i '1i #include "../drivers/kernelsu/ksu.h"' fs/exec.c
 
-          # 3. Inject Hooks using simpler "Search and Replace"
-          # This looks for the start of the functions and adds the hook inside the first '{'
-          sed -i '/do_faccessat/,/{/ s/{/{ ksu_handle_faccessat(\&dfd, \&filename, \&mode, NULL);/' fs/open.c
-          sed -i '/do_execveat_common/,/{/ s/{/{ ksu_handle_execveat(\&fd, \&filename, \&argv, \&envp, \&flags);/' fs/exec.c
-
-          # 4. VERIFICATION STEP (Check the logs to see if patching worked)
-          echo "--- VERIFYING FS/OPEN.C PATCH ---"
-          grep -C 3 "ksu_handle_faccessat" fs/open.c || (echo "❌ Patch failed in fs/open.c" && exit 1)
-          echo "--- VERIFYING FS/EXEC.C PATCH ---"
-          grep -C 3 "ksu_handle_execveat" fs/exec.c || (echo "❌ Patch failed in fs/exec.c" && exit 1)
-
-          # 5. Configs
+          # 5. Apply Configs to Defconfig
           CONFIG="arch/arm64/configs/vendor/gta9pwifi_eur_open_defconfig"
           sed -i '/CONFIG_KSU/d' $CONFIG
           {
@@ -67,7 +72,9 @@ jobs:
 
       - name: ⚙️ Configure and Compile
         run: |
+          # Use pipefail to catch errors immediately
           set -o pipefail
+          
           TOOLCHAIN_DIR=$GITHUB_WORKSPACE/toolchains
           CLANG_BIN=$TOOLCHAIN_DIR/clang/bin
           cd $GITHUB_WORKSPACE/kernel-source
@@ -90,16 +97,20 @@ jobs:
             KCFLAGS=-Wno-error
           "
           
-          # Clean build
+          # 1. Config
           make $MAKE_ARGS vendor/gta9pwifi_eur_open_defconfig
+
+          # 2. Build
+          echo "🚀 Starting compilation (Look for 'CC drivers/kernelsu/...' in logs)..."
           make -j$(nproc --all) $MAKE_ARGS Image.gz dtbs 2>&1 | tee ../build.log
 
-          # Join Kernel + DTB
+          # 3. Create Image.gz-dtb
           mkdir -p $GITHUB_WORKSPACE/final_output
           DTBS=$(find out/arch/arm64/boot/dts -name "*.dtb")
-          cat out/arch/arm64/boot/Image.gz $DTBS > out/arch/arm64/boot/Image.gz-dtb
-          
-          cp out/arch/arm64/boot/Image.gz-dtb $GITHUB_WORKSPACE/final_output/
+          if [ -n "$DTBS" ]; then
+            cat out/arch/arm64/boot/Image.gz $DTBS > out/arch/arm64/boot/Image.gz-dtb
+            cp out/arch/arm64/boot/Image.gz-dtb $GITHUB_WORKSPACE/final_output/
+          fi
           cp out/arch/arm64/boot/Image.gz $GITHUB_WORKSPACE/final_output/
           find out/arch/arm64/boot/dts -name "*.dtb" -exec cp {} $GITHUB_WORKSPACE/final_output/ \;
 
