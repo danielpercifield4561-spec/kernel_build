@@ -1,4 +1,4 @@
-name: Tab A9+ Custom Kernel V2 (Bit 6 - qgki) - Fixed KSU-Next
+name: Tab A9+ KSU-Next (Final Fix)
 
 on:
   workflow_dispatch:
@@ -21,82 +21,49 @@ jobs:
 
       - name: 📦 Reconstruct and Unpack Source
         run: |
-          echo "🔧 Reconstructing source archive..."
           cat Kernel_Source/Kernels.zip.* > Combined_Source.zip
           mkdir -p kernel-source
           7z x Combined_Source.zip -okernel-source/
           cd kernel-source
-
-          if [ -f "Kernels.zip" ]; then
-            echo "📦 Unpacking inner archive..."
-            7z x "Kernels.zip" -aoa && rm "Kernels.zip"
-          fi
-
+          if [ -f "Kernels.zip" ]; then 7z x "Kernels.zip" -aoa && rm "Kernels.zip"; fi
           INNER_TARBALL=$(find . -name "Kernel.tar.gz" | head -n 1)
-          if [ -n "$INNER_TARBALL" ]; then
-            echo "📦 Extracting tarball..."
-            tar -xf "$INNER_TARBALL" --strip-components=1 && rm "$INNER_TARBALL"
-          fi
-
+          if [ -n "$INNER_TARBALL" ]; then tar -xf "$INNER_TARBALL" --strip-components=1 && rm "$INNER_TARBALL"; fi
           if [ ! -f Makefile ]; then
-            echo "🔍 Makefile not at root, searching..."
-            SUBDIR=$(find . -maxdepth 3 -name "Makefile" -exec dirname {} \; | head -n 1)
-            if [ -n "$SUBDIR" ] && [ "$SUBDIR" != "." ]; then
-              echo "📁 Promoting source from: $SUBDIR"
-              mv "$SUBDIR"/* . 2>/dev/null || true
-              mv "$SUBDIR"/.* . 2>/dev/null || true
-            fi
+            SUBDIR=$(find . -maxdepth 2 -name "Makefile" -exec dirname {} \;)
+            [ -n "$SUBDIR" ] && mv "$SUBDIR"/* .
           fi
 
-          echo "✅ Unpack done"
-
-      - name: 🛠️ Patch KernelSU-Next (Brute Force Link)
+      - name: 🛠️ Patch KernelSU-Next (Brute Force)
         run: |
-          cd $GITHUB_WORKSPACE/kernel-source
-          chmod -R u+w .
-
-          # 1. Integrate KernelSU-Next Source
+          cd kernel-source
+          # 1. Download KSU-Next
           curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s next
           
-          # 2. BRUTE FORCE: Move KSU into drivers/char/ so it MUST link
-          echo "🚚 Moving KSU to drivers/char/ to force linking..."
-          mkdir -p drivers/char/ksu
-          cp -r drivers/kernelsu/* drivers/char/ksu/
-          
-          # Tell the char Makefile to include our new ksu subfolder
-          echo "obj-y += ksu/" >> drivers/char/Makefile
-          
-          # Create a Makefile inside that folder that the kernel understands
-          cat <<EOF > drivers/char/ksu/Makefile
-          obj-y += ksu.o
-          obj-y += allowlist.o
-          obj-y += auto_n_root.o
-          obj-y += engine.o
-          obj-y += manager.o
-          obj-y += overlayfs.o
-          obj-y += stat.o
-          obj-y += su.o
-          obj-y += hooks.o
-          EOF
+          # 2. Inject Headers (Force them to the very top)
+          sed -i '1i #include "../drivers/kernelsu/ksu.h"' fs/open.c
+          sed -i '1i #include "../drivers/kernelsu/ksu.h"' fs/exec.c
 
-          # 3. Inject Externs (Point them to the new location)
-          sed -i '1i extern int ksu_handle_faccessat(int *dfd, const char __user **filename, int *mode, int *flags);' fs/open.c
-          sed -i '1i struct user_arg_ptr;\nextern int ksu_handle_execveat(int *fd, struct filename **filename, struct user_arg_ptr *argv, struct user_arg_ptr *envp, int *flags);' fs/exec.c
+          # 3. Inject Hooks using simpler "Search and Replace"
+          # This looks for the start of the functions and adds the hook inside the first '{'
+          sed -i '/do_faccessat/,/{/ s/{/{ ksu_handle_faccessat(\&dfd, \&filename, \&mode, NULL);/' fs/open.c
+          sed -i '/do_execveat_common/,/{/ s/{/{ ksu_handle_execveat(\&fd, \&filename, \&argv, \&envp, \&flags);/' fs/exec.c
 
-          # 4. Inject Hook Logic
-          sed -i '/long do_faccessat(int dfd, const char __user \*filename, int mode)/{n;s/{/{ ksu_handle_faccessat(\&dfd, \&filename, \&mode, NULL);/}' fs/open.c
-          sed -i '/int do_execveat_common(int fd, struct filename \*filename,/{n;s/{/{ ksu_handle_execveat(\&fd, \&filename, \&argv, \&envp, \&flags);/}' fs/exec.c
+          # 4. VERIFICATION STEP (Check the logs to see if patching worked)
+          echo "--- VERIFYING FS/OPEN.C PATCH ---"
+          grep -C 3 "ksu_handle_faccessat" fs/open.c || (echo "❌ Patch failed in fs/open.c" && exit 1)
+          echo "--- VERIFYING FS/EXEC.C PATCH ---"
+          grep -C 3 "ksu_handle_execveat" fs/exec.c || (echo "❌ Patch failed in fs/exec.c" && exit 1)
 
-          # 5. Defconfig Setup
-          CONFIG_PATH="arch/arm64/configs/vendor/gta9pwifi_eur_open_defconfig"
-          sed -i '/CONFIG_KSU/d' "$CONFIG_PATH"
+          # 5. Configs
+          CONFIG="arch/arm64/configs/vendor/gta9pwifi_eur_open_defconfig"
+          sed -i '/CONFIG_KSU/d' $CONFIG
           {
             echo "CONFIG_KSU=y"
             echo "CONFIG_KSU_NEXT=y"
             echo "CONFIG_KSU_MANUAL_HOOK=y"
             echo "CONFIG_OVERLAY_FS=y"
             echo "CONFIG_KPROBES=n"
-          } >> "$CONFIG_PATH"
+          } >> $CONFIG
 
       - name: ⚙️ Configure and Compile
         run: |
@@ -104,7 +71,7 @@ jobs:
           TOOLCHAIN_DIR=$GITHUB_WORKSPACE/toolchains
           CLANG_BIN=$TOOLCHAIN_DIR/clang/bin
           cd $GITHUB_WORKSPACE/kernel-source
-
+          
           MAKE_ARGS="
             ARCH=arm64 \
             SUBARCH=arm64 \
@@ -122,46 +89,25 @@ jobs:
             DTC_EXT=dtc \
             KCFLAGS=-Wno-error
           "
-
-          echo "⚙️ Running defconfig..."
+          
+          # Clean build
           make $MAKE_ARGS vendor/gta9pwifi_eur_open_defconfig
+          make -j$(nproc --all) $MAKE_ARGS Image.gz dtbs 2>&1 | tee ../build.log
 
-          echo "🔨 Compiling..."
-          make -j$(nproc --all) $MAKE_ARGS Image.gz dtbs 2>&1 | tee $GITHUB_WORKSPACE/build.log
-
+          # Join Kernel + DTB
           mkdir -p $GITHUB_WORKSPACE/final_output
-          if [ -f "out/arch/arm64/boot/Image.gz" ]; then
-            DTBS=$(find out/arch/arm64/boot/dts -name "*.dtb" 2>/dev/null | head -10)
-            if [ -n "$DTBS" ]; then
-              cat out/arch/arm64/boot/Image.gz $DTBS > out/arch/arm64/boot/Image.gz-dtb
-              cp out/arch/arm64/boot/Image.gz-dtb $GITHUB_WORKSPACE/final_output/
-            fi
-            cp out/arch/arm64/boot/Image.gz $GITHUB_WORKSPACE/final_output/
-            find out/arch/arm64/boot/dts -name "*.dtb" -exec cp {} $GITHUB_WORKSPACE/final_output/ \;
-            echo "✅ Build successful"
-          else
-            echo "❌ Image.gz not found"
-            exit 1
-          fi
+          DTBS=$(find out/arch/arm64/boot/dts -name "*.dtb")
+          cat out/arch/arm64/boot/Image.gz $DTBS > out/arch/arm64/boot/Image.gz-dtb
+          
+          cp out/arch/arm64/boot/Image.gz-dtb $GITHUB_WORKSPACE/final_output/
+          cp out/arch/arm64/boot/Image.gz $GITHUB_WORKSPACE/final_output/
+          find out/arch/arm64/boot/dts -name "*.dtb" -exec cp {} $GITHUB_WORKSPACE/final_output/ \;
 
-      - name: 📤 Upload Artifacts
-        if: success()
+      - name: 📤 Upload
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-Result-${{ github.run_id }}
+          name: Kernel-KSU-Next-${{ github.run_id }}
           path: |
-            ${{ github.workspace }}/final_output/
-            ${{ github.workspace }}/build.log
-          retention-days: 30
-
-      - name: 📊 Upload Debug Info (on failure)
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: KernelSU-Debug-Info-${{ github.run_id }}
-          path: |
-            ${{ github.workspace }}/build.log
-            ${{ github.workspace }}/kernel-source/fs/open.c.backup
-            ${{ github.workspace }}/kernel-source/fs/exec.c.backup
-          if-no-files-found: warn
-          retention-days: 7
+            final_output/*
+            build.log
