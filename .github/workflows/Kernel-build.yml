@@ -97,10 +97,6 @@ jobs:
             echo "CONFIG_OVERLAY_FS=y"
             echo "CONFIG_KPROBES=n"
           } >> "$CONFIG_PATH"
-          "
-
-
-
 
       - name: ⚙️ Configure and Compile
         run: |
