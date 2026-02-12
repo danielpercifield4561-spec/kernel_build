@@ -5,8 +5,8 @@ on:
 
 jobs:
   build:
-   runs-on: ubuntu-latest
-   steps:
+    runs-on: ubuntu-latest
+    steps:
       - name: 📥 Checkout Repository
         uses: actions/checkout@v4
 
@@ -39,35 +39,31 @@ jobs:
           # 1. Integrate KernelSU-Next Source
           curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s next
           
-          # 2. Inject Headers to the top of fs files
-          # This fixes the "implicit declaration" error
-          echo "Adding KSU headers..."
-          sed -i '1i #include "../drivers/kernelsu/ksu.h"' fs/open.c
-          sed -i '1i #include "../drivers/kernelsu/ksu.h"' fs/exec.c
+          # 2. Inject Hooks and Externs
+          # We use 'extern' instead of #include to bypass header path issues
+          # We place the hook AFTER the variable declarations to fix the C90 error
+          
+          echo "Patching fs/open.c..."
+          sed -i '/long do_faccessat(int dfd, const char __user \*filename, int mode)/i \extern int ksu_handle_faccessat(int *dfd, const char __user **filename, int *mode, int *flags);' fs/open.c
+          sed -i '/unsigned int lookup_flags = LOOKUP_FOLLOW;/a \\tksu_handle_faccessat(&dfd, &filename, &mode, NULL);' fs/open.c
+          
+          echo "Patching fs/exec.c..."
+          sed -i '/int do_execveat_common(int fd, struct filename \*filename,/i \struct user_arg_ptr; \nextern int ksu_handle_execveat(int *fd, struct filename **filename, struct user_arg_ptr *argv, struct user_arg_ptr *envp, int *flags);' fs/exec.c
+          sed -i '/struct linux_binprm \*bprm;/a \\tksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);' fs/exec.c
 
-          # 3. Inject Hooks precisely
-          # This finds the function signature and adds the hook immediately AFTER the existing opening brace {
-          # This prevents the "function definition not allowed" error
-          echo "Injecting KSU hooks..."
-          sed -i '/long do_faccessat(int dfd, const char __user \*filename, int mode)/!b;n;s/{/{ ksu_handle_faccessat(\&dfd, \&filename, \&mode, NULL);/' fs/open.c
-          sed -i '/int do_execveat_common(int fd, struct filename \*filename,/!b;n;s/{/{ ksu_handle_execveat(\&fd, \&filename, \&argv, \&envp, \&flags);/' fs/exec.c
-
-          # 4. Add Configs to Defconfig
+          # 3. Add Configs
           CONFIG="arch/arm64/configs/vendor/gta9pwifi_eur_open_defconfig"
-          # Remove any existing KSU lines to avoid duplicates
           sed -i '/CONFIG_KSU/d' $CONFIG
           echo "CONFIG_KSU=y" >> $CONFIG
           echo "CONFIG_KSU_NEXT=y" >> $CONFIG
           echo "CONFIG_KSU_MANUAL_HOOK=y" >> $CONFIG
           echo "CONFIG_OVERLAY_FS=y" >> $CONFIG
-          # For qgki kernels, we must disable KPROBES for manual hooks to work
+          # Disable KPROBES for qgki compatibility with manual hooks
           sed -i 's/CONFIG_KPROBES=y/CONFIG_KPROBES=n/g' $CONFIG
 
       - name: ⚙️ Configure and Compile
         run: |
-          # Use pipefail to catch errors in the middle of a command chain
           set -o pipefail
-          
           TOOLCHAIN_DIR=$GITHUB_WORKSPACE/toolchains
           CLANG_BIN=$TOOLCHAIN_DIR/clang/bin
           cd $GITHUB_WORKSPACE/kernel-source
@@ -90,32 +86,28 @@ jobs:
             KCFLAGS=-Wno-error
           "
           
-          echo "⚙️ Running Defconfig..."
           make $MAKE_ARGS vendor/gta9pwifi_eur_open_defconfig
-
-          echo "🚀 Building Kernel (this should take 20+ minutes)..."
           make -j$(nproc --all) $MAKE_ARGS Image.gz dtbs 2>&1 | tee ../build.log
 
           # 🔗 Create Image.gz-dtb
-          echo "🔗 Creating Image.gz-dtb..."
-          # Find all DTBs regardless of where Samsung hid them
           DTBS=$(find out/arch/arm64/boot/dts -name "*.dtb")
           if [ -n "$DTBS" ]; then
             cat out/arch/arm64/boot/Image.gz $DTBS > out/arch/arm64/boot/Image.gz-dtb
-            echo "✅ Image.gz-dtb created."
-          else
-            echo "⚠️ No DTBs found! Device might not boot without them."
           fi
 
           # 📦 Prepare Output
           mkdir -p $GITHUB_WORKSPACE/final_output
-          # Use find to be greedy and grab any Image files created
-          find out/arch/arm64/boot -maxdepth 1 -name "Image*" -exec cp {} $GITHUB_WORKSPACE/final_output/ \;
-          # Also grab the individual DTBs
+          cp out/arch/arm64/boot/Image.gz-dtb $GITHUB_WORKSPACE/final_output/ 2>/dev/null || cp out/arch/arm64/boot/Image.gz $GITHUB_WORKSPACE/final_output/
           find out/arch/arm64/boot/dts -name "*.dtb" -exec cp {} $GITHUB_WORKSPACE/final_output/ \;
 
-          echo "✅ Artifacts gathered:"
-          ls -lh $GITHUB_WORKSPACE/final_output/
+      - name: 📤 Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Tab-A9-Plus-Kernel-Result
+          path: |
+            final_output/*
+            build.log
 
       - name: 📤 Upload
         if: always()
