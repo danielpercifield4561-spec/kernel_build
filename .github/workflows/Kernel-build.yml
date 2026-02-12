@@ -1,4 +1,4 @@
-name: Tab A9+ KSU-Next (Compatibility Fix)
+name: Tab A9+ KSU-Next (Backport + Gemini AI)
 
 on:
   workflow_dispatch:
@@ -33,27 +33,26 @@ jobs:
             [ -n "$MAKE_PATH" ] && mv $(dirname "$MAKE_PATH")/* .
           fi
 
-      - name: 🛠️ Patch KernelSU-Next & Fix 5.4 Errors
+      - name: 🛠️ Patch KernelSU-Next & Fix 5.4 Compatibility
         run: |
           cd kernel-source
           # 1. Download KSU-Next
           curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s next
           
-          # 2. Backport Fixes for Kernel 5.4
-          # Fix TWA_RESUME and put_task_struct by adding missing headers and definitions
-          echo "Injecting backport shims into kernelsu..."
+          # 2. Backport Fixes for Kernel 5.4 (The allowlist errors)
+          echo "Applying 5.4 compatibility shims..."
           sed -i '1i #include <linux/sched.h>\n#include <linux/sched/task.h>\n#ifndef TWA_RESUME\n#define TWA_RESUME 1\n#endif' drivers/kernelsu/allowlist.c
           
           # 3. Force Build System Integration
           sed -i '1i obj-y += kernelsu/' drivers/Makefile
           
-          # 4. Inject Headers and Hooks into System Calls
+          # 4. Inject Hooks and Headers
           sed -i '1i #include "../drivers/kernelsu/ksu.h"' fs/open.c
           sed -i '1i #include "../drivers/kernelsu/ksu.h"' fs/exec.c
           sed -i '/long do_faccessat(int dfd, const char __user \*filename, int mode)/{n;s/{/{ ksu_handle_faccessat(\&dfd, \&filename, \&mode, NULL);/}' fs/open.c
           sed -i '/int do_execveat_common(int fd, struct filename \*filename,/{n;s/{/{ ksu_handle_execveat(\&fd, \&filename, \&argv, \&envp, \&flags);/}' fs/exec.c
 
-          # 5. Apply your custom Defconfig
+          # 5. Apply custom Defconfig if present
           if [ -f "../gta9pwifi_eur_open_defconfig" ]; then
             cp ../gta9pwifi_eur_open_defconfig arch/arm64/configs/vendor/gta9pwifi_eur_open_defconfig
           fi
@@ -99,16 +98,17 @@ jobs:
         env:
           GEMINI_API_KEY: ${{ secrets.Gemini_Key }}
         run: |
-          # Clean and format error log for JSON
+          # 1. Clean and format error log for JSON
           ERROR_LOG=$(tail -n 150 build.log | jq -Rs .)
           
+          # 2. Construct Prompt
           PROMPT="The following is a snippet from an Android Kernel 5.4 build (Tab A9+). The build failed. Analyze the error and give me the exact command or code to fix it. Log:\n$ERROR_LOG"
           
-          # Send request to Gemini
+          # 3. Call Gemini
           RESPONSE=$(curl -s -X POST "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=$GEMINI_API_KEY" \
             -H "Content-Type: application/json" \
             -d "{ \"contents\": [{ \"parts\": [{ \"text\": \"$PROMPT\" }] }] }")
 
-          # Post results to Summary
+          # 4. Output to Step Summary
           echo "### 🤖 Gemini Build Analysis" >> $GITHUB_STEP_SUMMARY
           echo "$RESPONSE" | jq -r '.candidates[0].content.parts[0].text' >> $GITHUB_STEP_SUMMARY || echo "AI analysis could not be generated." >> $GITHUB_STEP_SUMMARY
