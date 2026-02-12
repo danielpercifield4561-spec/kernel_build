@@ -50,30 +50,44 @@ jobs:
 
           echo "✅ Unpack done"
 
-      - name: 🛠️ Patch KernelSU-Next
+      - name: 🛠️ Patch KernelSU-Next (Brute Force Link)
         run: |
           cd $GITHUB_WORKSPACE/kernel-source
-
-          # 1. Unlock everything
           chmod -R u+w .
-          
-          # 2. Integrate KernelSU-Next Source
+
+          # 1. Integrate KernelSU-Next Source
           curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s next
           
-          # 3. FORCE LINKING (The Fix for Undefined Symbols)
-          # Instead of a new Makefile, we tell the PARENT Makefile to look inside kernelsu
-          echo "obj-y += kernelsu/" >> drivers/Makefile
+          # 2. BRUTE FORCE: Move KSU into drivers/char/ so it MUST link
+          echo "🚚 Moving KSU to drivers/char/ to force linking..."
+          mkdir -p drivers/char/ksu
+          cp -r drivers/kernelsu/* drivers/char/ksu/
           
-          # 4. Manual Hook Injection (Headers first)
+          # Tell the char Makefile to include our new ksu subfolder
+          echo "obj-y += ksu/" >> drivers/char/Makefile
+          
+          # Create a Makefile inside that folder that the kernel understands
+          cat <<EOF > drivers/char/ksu/Makefile
+          obj-y += ksu.o
+          obj-y += allowlist.o
+          obj-y += auto_n_root.o
+          obj-y += engine.o
+          obj-y += manager.o
+          obj-y += overlayfs.o
+          obj-y += stat.o
+          obj-y += su.o
+          obj-y += hooks.o
+          EOF
+
+          # 3. Inject Externs (Point them to the new location)
           sed -i '1i extern int ksu_handle_faccessat(int *dfd, const char __user **filename, int *mode, int *flags);' fs/open.c
           sed -i '1i struct user_arg_ptr;\nextern int ksu_handle_execveat(int *fd, struct filename **filename, struct user_arg_ptr *argv, struct user_arg_ptr *envp, int *flags);' fs/exec.c
 
-          # 5. Inject the logic (faccessat and execveat)
-          # We use a safer search pattern to ensure we hit the right spot
+          # 4. Inject Hook Logic
           sed -i '/long do_faccessat(int dfd, const char __user \*filename, int mode)/{n;s/{/{ ksu_handle_faccessat(\&dfd, \&filename, \&mode, NULL);/}' fs/open.c
           sed -i '/int do_execveat_common(int fd, struct filename \*filename,/{n;s/{/{ ksu_handle_execveat(\&fd, \&filename, \&argv, \&envp, \&flags);/}' fs/exec.c
 
-          # 6. Final Defconfig tweaks
+          # 5. Defconfig Setup
           CONFIG_PATH="arch/arm64/configs/vendor/gta9pwifi_eur_open_defconfig"
           sed -i '/CONFIG_KSU/d' "$CONFIG_PATH"
           {
@@ -83,6 +97,7 @@ jobs:
             echo "CONFIG_OVERLAY_FS=y"
             echo "CONFIG_KPROBES=n"
           } >> "$CONFIG_PATH"
+          "
 
 
 
