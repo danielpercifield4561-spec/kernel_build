@@ -157,12 +157,18 @@ jobs:
           echo "📦 Gathering final artifacts..."
           mkdir -p $GITHUB_WORKSPACE/final_output
           
-          # Copy everything found in the boot folder (Image, Image.gz, Image.gz-dtb)
-          find out/arch/arm64/boot -maxdepth 1 -type f -exec cp {} $GITHUB_WORKSPACE/final_output/ \;
+          # Use find to grab the files from the 'out' directory specifically
+          find out/arch/arm64/boot/ -name "Image.gz" -exec cp {} $GITHUB_WORKSPACE/final_output/ \;
+          find out/arch/arm64/boot/ -name "Image" -exec cp {} $GITHUB_WORKSPACE/final_output/ \;
           
-          # Copy all individual DTB files found
-          find out/arch/arm64/boot/dts -name "*.dtb" -exec cp {} $GITHUB_WORKSPACE/final_output/ \;
-          echo "✅ Files ready for upload:"
+          # Find all DTBs
+          find out/arch/arm64/boot/dts/ -name "*.dtb" -exec cp {} $GITHUB_WORKSPACE/final_output/ \;
+
+          # Check if we have anything to show for it
+          echo "✅ Files found in out directory:"
+          ls -R out/arch/arm64/boot/
+          
+          echo "🚀 Files moved to final_output:"
           ls -lh $GITHUB_WORKSPACE/final_output/
       - name: 📤 Upload
         if: always()
